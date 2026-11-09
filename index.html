@@ -7,11 +7,13 @@
 <style>
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden}
-#app{position:fixed;inset:0;display:flex;flex-direction:column;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
-canvas{flex:1;min-height:0;width:100%;object-fit:contain;background:#000;touch-action:none}
-#bar{display:flex;gap:8px;padding:8px;justify-content:center;flex-wrap:wrap;background:#0a0a0a}
-button,a.btn{background:#1d1d1d;color:#fff;border:1px solid #f5c542;border-radius:10px;padding:10px 14px;font-size:15px;font-weight:600;text-decoration:none}
-button.rec{background:#d92b2b;border-color:#d92b2b}
+#app{position:fixed;inset:0;background:#000}
+canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;touch-action:none}
+#bar{position:absolute;right:max(8px,env(safe-area-inset-right));top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:10px;align-items:center;z-index:3}
+#menu{display:flex;flex-direction:column;gap:10px;align-items:center}
+button{background:#1d1d1d;color:#fff;border:1px solid #f5c542;border-radius:10px;padding:10px 14px;font-size:15px;font-weight:600}
+.fab{width:52px;height:52px;border-radius:50%;padding:0;display:flex;align-items:center;justify-content:center;font-size:12px;line-height:1.15;text-align:center;background:rgba(0,0,0,.55);border:1px solid rgba(245,197,66,.85);color:#fff;font-weight:700;text-decoration:none;-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+.fab.rec{background:rgba(217,43,43,.92);border-color:#fff;font-size:24px}
 #setup{position:fixed;inset:0;background:#0b0b0b;padding:20px;overflow:auto;z-index:5}
 #setup h1{font-size:20px;margin:0 0 4px;color:#f5c542;letter-spacing:1px}
 #setup p{color:#aaa;font-size:14px;margin:4px 0 14px}
@@ -28,11 +30,15 @@ input.w{width:90px;flex:none}
 <div id="app">
   <canvas id="cv" width="1280" height="720"></canvas>
   <div id="bar" class="hide">
-    <button id="rec" class="rec">● Ghi hình</button>
-    <button id="shot">+ Cú đánh</button>
-    <button id="rally">+ Rally</button>
-    <button id="redo">⟲ Chỉnh lại</button>
-    <a id="dl" class="btn hide">⬇ Tải video</a>
+    <button id="rec" class="fab rec">●</button>
+    <button id="more" class="fab">⋯</button>
+    <div id="menu" class="hide">
+      <button id="shot" class="fab">+1<br>cú</button>
+      <button id="rally" class="fab">+1<br>rally</button>
+      <button id="flip" class="fab">🔄<br>cam</button>
+      <button id="redo" class="fab">⟲<br>sân</button>
+      <a id="dl" class="fab hide">⬇</a>
+    </div>
   </div>
 </div>
 
@@ -72,26 +78,31 @@ $('#go').onclick = async () => {
   });
   if (!P.length) { $('#err').textContent = 'Nhập ít nhất 1 người chơi.'; return; }
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
-      audio: false
-    });
-    vid.srcObject = stream; await vid.play();
-    cv.width = vid.videoWidth; cv.height = vid.videoHeight;
-    try { await navigator.wakeLock.request('screen'); } catch (e) {}
+    await openCam();
     $('#setup').classList.add('hide'); $('#bar').classList.remove('hide');
-    startCalib();
-    loadModel();
-    requestAnimationFrame(loop);
+    startCalib(); loadModel(); requestAnimationFrame(loop);
   } catch (e) {
     $('#err').textContent = 'Không mở được camera: ' + e.message + ' (cần HTTPS và cấp quyền camera).';
   }
 };
+let facing = 'environment';
+async function openCam() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }, audio: false });
+  vid.srcObject = stream; await vid.play();
+  if (!rec) { cv.width = vid.videoWidth; cv.height = vid.videoHeight; }
+  try { await navigator.wakeLock.request('screen'); } catch (e) {}
+}
 
 function startCalib() { corners = []; Hm = null; step = 'corners'; pi = 0; prev = null; prev2 = null; sh = null; lastShot = null; pend = null; spd = 0; poses = []; shots = 0; rally = 1; }
 $('#redo').onclick = startCalib;
 $('#shot').onclick = () => shots++;
 $('#rally').onclick = () => { rally++; shots = 0; };
+$('#more').onclick = () => $('#menu').classList.toggle('hide');
+$('#flip').onclick = async () => {
+  facing = facing === 'environment' ? 'user' : 'environment';
+  try { await openCam(); startCalib(); } catch (e) { alert('Không đổi được camera: ' + e.message); }
+};
 
 // ---------- Hiệu chỉnh sân (homography) ----------
 function solveH(src) {
@@ -138,9 +149,10 @@ let det = null, busy = false, poses = [], modelMsg = 'Đang tải mô hình AI�
 async function loadModel() {
   try {
     await tf.ready();
-    det = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet,
+    const d0 = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet,
       { modelType: poseDetection.movenet.modelType.MULTIPOSE_LIGHTNING, enableTracking: true });
-    modelMsg = '';
+    try { await d0.estimatePoses(vid); } catch (e) {}
+    det = d0; modelMsg = '';
   } catch (e) {
     modelMsg = 'Không tải được AI, dùng tracking chuyển động';
     setTimeout(() => modelMsg = '', 4000);
@@ -162,7 +174,7 @@ function poseStep() {
   det.estimatePoses(vid).then(r => { poses = r.map(poseFeat).filter(Boolean); busy = false; assign(); }).catch(() => busy = false);
 }
 function assign() {
-  const pr = [], gate = 260 * S, uj = new Set(), ui = new Set();
+  const pr = [], gate = 260 * R, uj = new Set(), ui = new Set();
   P.forEach((p, i) => poses.forEach((f, j) => pr.push([Math.hypot(f.cx - p.x, f.fy - p.fy), i, j])));
   pr.sort((a, b) => a[0] - b[0]);
   pr.forEach(([d, i, j]) => {
@@ -205,7 +217,7 @@ const sc2 = sm2.getContext('2d', { willReadFrequently: true });
 let prev2 = null, sh = null, lastShot = null, pend = null, lastShotT = -9, lastSeen = 0, spd = 0;
 function inBody(X, Y) {
   return P.some(p => {
-    const b = p.bb || [p.x - 45 * S, p.y - 100 * S, p.x + 45 * S, p.fy + 10 * S], mg = 20 * S;
+    const b = p.bb || [p.x - 45 * R, p.y - 100 * R, p.x + 45 * R, p.fy + 10 * R], mg = 20 * R;
     return X > b[0] - mg && X < b[2] + mg && Y > b[1] - mg && Y < b[3] + mg;
   });
 }
@@ -221,10 +233,12 @@ function shuttleStep() {
   const d = sc2.getImageData(0, 0, 320, 180).data, g = new Uint8Array(57600), k = cv.width / 320;
   for (let i = 0; i < 57600; i++) g[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3;
   if (prev2) {
-    const cl = [];
-    for (let y = 1; y < 179; y++) for (let x = 1; x < 319; x++) {
+    const cl = []; let cand = 0;
+    scan: for (let y = 1; y < 179; y++) for (let x = 1; x < 319; x++) {
       const i = y * 320 + x;
-      if (g[i] > 150 && Math.abs(g[i] - prev2[i]) > 35 && !inBody(x * k, y * k)) {
+      if (g[i] > 150 && Math.abs(g[i] - prev2[i]) > 35) {
+        if (++cand > 400) { cl.length = 0; break scan; }
+        if (inBody(x * k, y * k)) continue;
         const c = cl.find(c => Math.abs(c.x / c.n - x) < 5 && Math.abs(c.y / c.n - y) < 5);
         if (c) { c.x += x; c.y += y; c.n++; } else if (cl.length < 60) cl.push({ x, y, n: 1 });
       }
@@ -233,7 +247,7 @@ function shuttleStep() {
     const ok = cl.filter(c => c.n <= 40).map(c => ({ x: c.x / c.n * k, y: c.y / c.n * k, n: c.n }));
     if (sh) {
       const dt = Math.max(T - sh.t, .016), px = sh.x + sh.vx * dt, py = sh.y + sh.vy * dt;
-      let bd = 120 * S; ok.forEach(c => { const dd = Math.hypot(c.x - px, c.y - py); if (dd < bd) { bd = dd; best = c; } });
+      let bd = 120 * R; ok.forEach(c => { const dd = Math.hypot(c.x - px, c.y - py); if (dd < bd) { bd = dd; best = c; } });
     } else ok.forEach(c => { if (!best || c.n > best.n) best = c; });
 
     if (best) {
@@ -243,9 +257,9 @@ function shuttleStep() {
         sh.vx = ovx * .4 + (nx - sh.x) / dt * .6; sh.vy = ovy * .4 + (ny - sh.y) / dt * .6;
         const m1 = toM(sh.x, sh.y), m2 = toM(nx, ny);
         spd = spd * .6 + Math.min(400, Math.hypot(m2[0] - m1[0], m2[1] - m1[1]) / dt * 3.6) * .4;
-        const a = Math.hypot(ovx, ovy), b = Math.hypot(sh.vx, sh.vy), th = 180 * S;
+        const a = Math.hypot(ovx, ovy), b = Math.hypot(sh.vx, sh.vy), th = 180 * R;
         if (a > th && b > th && (ovx * sh.vx + ovy * sh.vy) / (a * b) < .2 && T - lastShotT > .4) {
-          let bp = null, bd = 170 * S;
+          let bp = null, bd = 170 * R;
           P.forEach(p => (p.wr || []).concat([{ x: p.x, y: p.y }]).forEach(w => {
             const dd = Math.hypot(w.x - nx, w.y - ny); if (dd < bd) { bd = dd; bp = p; }
           }));
@@ -285,9 +299,9 @@ function txt(t, x, y, size, color = '#fff', align = 'left', style = '700') {
   ctx.font = `${style} ${size * S}px "Arial Narrow",Arial,sans-serif`;
   ctx.fillStyle = color; ctx.textAlign = align; ctx.fillText(t, x, y);
 }
-let S = 1;
+let S = 1, kv = 1, R = 1;
 function hud() {
-  S = cv.width / 1280; const W = cv.width, Hh = cv.height, m = 14 * S;
+  S = Math.max(.6, .9 / kv); const W = cv.width, Hh = cv.height, m = 14 * S;
   txt('RALLY ANALYSIS', m + 6 * S, 30 * S, 14, '#f5c542');
   if (modelMsg) txt(modelMsg, W / 2, 60 * S, 14, '#f5c542', 'center');
 
@@ -376,9 +390,12 @@ function banner(t, c = '#f5c542') {
 function loop(ts) {
   requestAnimationFrame(loop);
   if (!vid.videoWidth) return;
+  if (!rec && (cv.width !== vid.videoWidth || cv.height !== vid.videoHeight)) { cv.width = vid.videoWidth; cv.height = vid.videoHeight; startCalib(); }
   const dt = (ts - last) / 1000; last = ts;
+  R = cv.width / 1280;
+  const r = cv.getBoundingClientRect(); kv = Math.min(r.width / cv.width, r.height / cv.height) || 1;
   ctx.drawImage(vid, 0, 0, cv.width, cv.height);
-  if (step === 'run') { T += Math.min(dt, .2); if (fr++ % 2 === 0) track(); }
+  if (step === 'run') { T += Math.min(dt, .2); try { if (fr++ % 2 === 0) track(); } catch (e) {} }
   hud();
 }
 
@@ -395,12 +412,12 @@ $('#rec').onclick = async () => {
     const type = rec.mimeType || 'video/webm', ext = type.includes('mp4') ? 'mp4' : 'webm';
     const a = $('#dl'); a.href = URL.createObjectURL(new Blob(chunks, { type }));
     a.download = 'rally-' + new Date().toISOString().replace(/[:.]/g, '-') + '.' + ext;
-    a.classList.remove('hide');
+    a.classList.remove('hide'); $('#menu').classList.remove('hide');
     if (mic) mic.getTracks().forEach(t => t.stop());
-    rec = null; $('#rec').textContent = '● Ghi hình';
+    rec = null; $('#rec').textContent = '●';
   };
   rec.start(1000); recT0 = performance.now();
-  $('#dl').classList.add('hide'); $('#rec').textContent = '■ Dừng';
+  $('#dl').classList.add('hide'); $('#rec').textContent = '■';
 };
 </script>
 </body>
